@@ -1,0 +1,935 @@
+name: Build Healthy Me v0.6.1 Corrected Beta
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/HealthyMe-v0.6.1-CORRECTED.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create clean Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf app
+          flutter create --platforms=android --project-name healthy_me --org com.rustnrum app
+
+      - name: Write corrected Healthy Me source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > app/pubspec.yaml <<'PUBSPEC'
+          name: healthy_me
+          description: Healthy Me health and fitness companion
+          publish_to: 'none'
+          version: 0.6.1+61
+
+          environment:
+            sdk: '>=3.10.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            file_picker: ^13.1.0
+
+          flutter:
+            uses-material-design: true
+          PUBSPEC
+
+          cat > app/lib/main.dart <<'DART'
+          import 'dart:convert';
+          import 'package:file_picker/file_picker.dart';
+          import 'package:flutter/material.dart';
+
+          void main() {
+            runApp(const HealthyMeApp());
+          }
+
+          class HealthyMeApp extends StatelessWidget {
+            const HealthyMeApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                title: 'Healthy Me',
+                theme: ThemeData(
+                  useMaterial3: true,
+                  colorSchemeSeed: const Color(0xFF226C63),
+                  scaffoldBackgroundColor: const Color(0xFFF5F7F6),
+                  cardTheme: const CardThemeData(
+                    elevation: 0,
+                    margin: EdgeInsets.zero,
+                  ),
+                  inputDecorationTheme: const InputDecorationTheme(
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                home: const HomeShell(),
+              );
+            }
+          }
+
+          class HomeShell extends StatefulWidget {
+            const HomeShell({super.key});
+
+            @override
+            State<HomeShell> createState() => _HomeShellState();
+          }
+
+          class _HomeShellState extends State<HomeShell> {
+            int index = 0;
+            double? currentWeight;
+            double? goalWeight;
+            int age = 18;
+            int workouts = 0;
+            String sex = 'Male';
+            String? lastImportedFile;
+
+            final Map<String, bool> connections = {
+              'Health Connect': false,
+              'Samsung Health': false,
+              'Fitbit': false,
+              'Garmin': false,
+              'Smart Scale': false,
+              'Sleep Device': false,
+            };
+
+            final Map<String, List<String>> connectionMetrics = {
+              'Health Connect': ['Steps', 'Sleep', 'Heart rate', 'Weight', 'Workouts'],
+              'Samsung Health': ['Steps', 'Sleep', 'Heart rate', 'Workouts'],
+              'Fitbit': ['Steps', 'Sleep', 'Heart rate'],
+              'Garmin': ['Steps', 'Sleep', 'Heart rate', 'Workouts'],
+              'Smart Scale': ['Weight', 'Body fat', 'BMI', 'Muscle mass'],
+              'Sleep Device': ['Sleep duration', 'Sleep stages'],
+            };
+
+            final Map<String, String> labs = {};
+
+            String get sleepGoal {
+              if (age < 13) return '9–12 hr';
+              if (age < 18) return '8–10 hr';
+              if (age < 65) return '7–9 hr';
+              return '7–8 hr';
+            }
+
+            String get stepSource {
+              if (connections['Health Connect'] == true) return 'Health Connect';
+              if (connections['Samsung Health'] == true) return 'Samsung Health';
+              if (connections['Fitbit'] == true) return 'Fitbit';
+              if (connections['Garmin'] == true) return 'Garmin';
+              return 'Not connected';
+            }
+
+            String get bodyCompositionSource {
+              return connections['Smart Scale'] == true ? 'Smart Scale' : 'Not connected';
+            }
+
+            List<String> get visibleMarkers {
+              final common = [
+                'A1C',
+                'Fasting glucose',
+                'LDL',
+                'HDL',
+                'Triglycerides',
+                'Vitamin D',
+                'Ferritin',
+                'Hemoglobin',
+              ];
+              if (sex == 'Female') {
+                return [
+                  ...common,
+                  'Estradiol',
+                  'FSH',
+                  'LH',
+                  'Total testosterone',
+                ];
+              }
+              return [
+                ...common,
+                'Total testosterone',
+                'Free testosterone',
+              ];
+            }
+
+            Future<void> importCsv() async {
+              try {
+                final PlatformFile? file = await FilePicker.pickFile(
+                  type: FileType.custom,
+                  allowedExtensions: const ['csv', 'txt'],
+                );
+                if (file == null) return;
+                final bytes = await file.readAsBytes();
+                final text = utf8.decode(bytes, allowMalformed: true);
+                int imported = 0;
+                for (final rawLine in const LineSplitter().convert(text)) {
+                  final line = rawLine.trim();
+                  if (line.isEmpty) continue;
+                  final parts = line.split(',');
+                  if (parts.length < 2) continue;
+
+                  final marker = parts[0].trim().toLowerCase();
+                  final value = parts[1].trim();
+                  for (final known in visibleMarkers) {
+                    if (known.toLowerCase() == marker) {
+                      labs[known] = value;
+                      imported++;
+                    }
+                  }
+                }
+
+                setState(() => lastImportedFile = file.name);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      imported == 0
+                          ? 'File loaded, but no recognized marker,value rows were found.'
+                          : 'Imported $imported bloodwork values from ${file.name}.',
+                    ),
+                  ),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Import failed: $e')),
+                );
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final pages = [
+                TodayPage(
+                  currentWeight: currentWeight,
+                  goalWeight: goalWeight,
+                  age: age,
+                  workouts: workouts,
+                  sleepGoal: sleepGoal,
+                  stepSource: stepSource,
+                  bodyCompositionSource: bodyCompositionSource,
+                  onAgeChanged: (v) => setState(() => age = v),
+                  onWeightChanged: (current, goal) => setState(() {
+                    currentWeight = current;
+                    goalWeight = goal;
+                  }),
+                  onWorkout: () => setState(() => workouts++),
+                ),
+                ConnectionsPage(
+                  connections: connections,
+                  metrics: connectionMetrics,
+                  onChanged: (name, value) =>
+                      setState(() => connections[name] = value),
+                ),
+                LabsPage(
+                  sex: sex,
+                  labs: labs,
+                  visibleMarkers: visibleMarkers,
+                  lastImportedFile: lastImportedFile,
+                  onSexChanged: (value) => setState(() => sex = value),
+                  onLabChanged: (name, value) => labs[name] = value,
+                  onImport: importCsv,
+                ),
+                PlanPage(
+                  sleepGoal: sleepGoal,
+                  currentWeight: currentWeight,
+                  goalWeight: goalWeight,
+                  labs: labs,
+                  connections: connections,
+                ),
+              ];
+
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text(
+                    'Healthy Me',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  actions: [
+                    Container(
+                      margin: const EdgeInsets.only(right: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Text('Beta 0.6.1'),
+                    ),
+                  ],
+                ),
+                body: SafeArea(child: pages[index]),
+                bottomNavigationBar: NavigationBar(
+                  selectedIndex: index,
+                  onDestinationSelected: (value) => setState(() => index = value),
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.home_outlined),
+                      selectedIcon: Icon(Icons.home),
+                      label: 'Today',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.hub_outlined),
+                      selectedIcon: Icon(Icons.hub),
+                      label: 'Connect',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.science_outlined),
+                      selectedIcon: Icon(Icons.science),
+                      label: 'Labs',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.route_outlined),
+                      selectedIcon: Icon(Icons.route),
+                      label: 'Plan',
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class PageWrap extends StatelessWidget {
+            final Widget child;
+            const PageWrap({super.key, required this.child});
+
+            @override
+            Widget build(BuildContext context) {
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                children: [child],
+              );
+            }
+          }
+
+          class SectionTitle extends StatelessWidget {
+            final String title;
+            final String? subtitle;
+            const SectionTitle(this.title, {super.key, this.subtitle});
+
+            @override
+            Widget build(BuildContext context) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle!,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }
+          }
+
+          class InfoCard extends StatelessWidget {
+            final Widget child;
+            const InfoCard({super.key, required this.child});
+
+            @override
+            Widget build(BuildContext context) {
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: child,
+                ),
+              );
+            }
+          }
+
+          class TodayPage extends StatelessWidget {
+            final double? currentWeight;
+            final double? goalWeight;
+            final int age;
+            final int workouts;
+            final String sleepGoal;
+            final String stepSource;
+            final String bodyCompositionSource;
+            final ValueChanged<int> onAgeChanged;
+            final void Function(double?, double?) onWeightChanged;
+            final VoidCallback onWorkout;
+
+            const TodayPage({
+              super.key,
+              required this.currentWeight,
+              required this.goalWeight,
+              required this.age,
+              required this.workouts,
+              required this.sleepGoal,
+              required this.stepSource,
+              required this.bodyCompositionSource,
+              required this.onAgeChanged,
+              required this.onWeightChanged,
+              required this.onWorkout,
+            });
+
+            @override
+            Widget build(BuildContext context) {
+              final remaining = currentWeight != null && goalWeight != null
+                  ? currentWeight! - goalWeight!
+                  : null;
+
+              return PageWrap(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SectionTitle(
+                      'Today',
+                      subtitle:
+                          'Only show useful numbers. Connected devices fill these in automatically.',
+                    ),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        MetricTile(
+                          label: 'Steps',
+                          value: stepSource == 'Not connected' ? '—' : 'Auto',
+                          detail: stepSource,
+                          icon: Icons.directions_walk,
+                        ),
+                        MetricTile(
+                          label: 'Sleep goal',
+                          value: sleepGoal,
+                          detail: 'Suggested from age',
+                          icon: Icons.bedtime_outlined,
+                        ),
+                        MetricTile(
+                          label: 'Body fat',
+                          value: 'Auto',
+                          detail: bodyCompositionSource,
+                          icon: Icons.monitor_weight_outlined,
+                        ),
+                        MetricTile(
+                          label: 'Workouts',
+                          value: '$workouts',
+                          detail: 'Logged today',
+                          icon: Icons.fitness_center,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    InfoCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Weight goal',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            currentWeight == null
+                                ? 'Set your current and goal weight.'
+                                : '${currentWeight!.toStringAsFixed(1)} lb → ${goalWeight?.toStringAsFixed(1) ?? '—'} lb',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          if (remaining != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              remaining > 0
+                                  ? '${remaining.toStringAsFixed(1)} lb remaining'
+                                  : 'Goal reached or exceeded',
+                            ),
+                          ],
+                          const SizedBox(height: 12),
+                          WeightEditor(
+                            current: currentWeight,
+                            goal: goalWeight,
+                            onSave: onWeightChanged,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    InfoCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Sleep recommendation',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 8),
+                          Text('Age $age: target $sleepGoal per night.'),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              const Text('Age'),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Slider(
+                                  min: 13,
+                                  max: 80,
+                                  divisions: 67,
+                                  value: age.clamp(13, 80).toDouble(),
+                                  label: '$age',
+                                  onChanged: (v) => onAgeChanged(v.round()),
+                                ),
+                              ),
+                              SizedBox(
+                                width: 38,
+                                child: Text(
+                                  '$age',
+                                  textAlign: TextAlign.end,
+                                  style: const TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: onWorkout,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Log a workout'),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Healthy Me provides wellness suggestions, not medical diagnosis or treatment.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class MetricTile extends StatelessWidget {
+            final String label;
+            final String value;
+            final String detail;
+            final IconData icon;
+
+            const MetricTile({
+              super.key,
+              required this.label,
+              required this.value,
+              required this.detail,
+              required this.icon,
+            });
+
+            @override
+            Widget build(BuildContext context) {
+              final width = (MediaQuery.of(context).size.width - 44) / 2;
+              return SizedBox(
+                width: width,
+                child: InfoCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(icon),
+                      const SizedBox(height: 14),
+                      Text(label, style: Theme.of(context).textTheme.labelLarge),
+                      const SizedBox(height: 3),
+                      Text(
+                        value,
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        detail,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+
+          class WeightEditor extends StatefulWidget {
+            final double? current;
+            final double? goal;
+            final void Function(double?, double?) onSave;
+
+            const WeightEditor({
+              super.key,
+              required this.current,
+              required this.goal,
+              required this.onSave,
+            });
+
+            @override
+            State<WeightEditor> createState() => _WeightEditorState();
+          }
+
+          class _WeightEditorState extends State<WeightEditor> {
+            late final TextEditingController currentController;
+            late final TextEditingController goalController;
+
+            @override
+            void initState() {
+              super.initState();
+              currentController = TextEditingController(
+                text: widget.current?.toStringAsFixed(1) ?? '',
+              );
+              goalController = TextEditingController(
+                text: widget.goal?.toStringAsFixed(1) ?? '',
+              );
+            }
+
+            @override
+            void dispose() {
+              currentController.dispose();
+              goalController.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: currentController,
+                          keyboardType:
+                              const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Current lb',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: goalController,
+                          keyboardType:
+                              const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'Goal lb',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton.tonal(
+                      onPressed: () => widget.onSave(
+                        double.tryParse(currentController.text.trim()),
+                        double.tryParse(goalController.text.trim()),
+                      ),
+                      child: const Text('Save weight'),
+                    ),
+                  ),
+                ],
+              );
+            }
+          }
+
+          class ConnectionsPage extends StatelessWidget {
+            final Map<String, bool> connections;
+            final Map<String, List<String>> metrics;
+            final void Function(String, bool) onChanged;
+
+            const ConnectionsPage({
+              super.key,
+              required this.connections,
+              required this.metrics,
+              required this.onChanged,
+            });
+
+            @override
+            Widget build(BuildContext context) {
+              return PageWrap(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SectionTitle(
+                      'Connections',
+                      subtitle:
+                          'Pick the source. Healthy Me shows exactly which metrics each connection can provide.',
+                    ),
+                    ...connections.entries.map((entry) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: InfoCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SwitchListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(
+                                  entry.key,
+                                  style: const TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                                subtitle: Text(
+                                  entry.value ? 'Selected' : 'Not selected',
+                                ),
+                                value: entry.value,
+                                onChanged: (v) => onChanged(entry.key, v),
+                              ),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                children: (metrics[entry.key] ?? const [])
+                                    .map((m) => Chip(label: Text(m)))
+                                    .toList(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                    const Text(
+                      'These toggles configure the beta data-source plan. Device authorization is connected in the next integration pass.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class LabsPage extends StatelessWidget {
+            final String sex;
+            final Map<String, String> labs;
+            final List<String> visibleMarkers;
+            final String? lastImportedFile;
+            final ValueChanged<String> onSexChanged;
+            final void Function(String, String) onLabChanged;
+            final Future<void> Function() onImport;
+
+            const LabsPage({
+              super.key,
+              required this.sex,
+              required this.labs,
+              required this.visibleMarkers,
+              required this.lastImportedFile,
+              required this.onSexChanged,
+              required this.onLabChanged,
+              required this.onImport,
+            });
+
+            @override
+            Widget build(BuildContext context) {
+              return PageWrap(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SectionTitle(
+                      'Bloodwork',
+                      subtitle:
+                          'Enter the values that can meaningfully inform training, recovery, and nutrition suggestions.',
+                    ),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'Male', label: Text('Male')),
+                        ButtonSegment(value: 'Female', label: Text('Female')),
+                      ],
+                      selected: {sex},
+                      onSelectionChanged: (values) => onSexChanged(values.first),
+                    ),
+                    const SizedBox(height: 14),
+                    InfoCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          FilledButton.tonalIcon(
+                            onPressed: onImport,
+                            icon: const Icon(Icons.upload_file),
+                            label: const Text('Import CSV from Excel'),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            lastImportedFile == null
+                                ? 'CSV format: marker,value — for example: A1C,5.6'
+                                : 'Last imported: $lastImportedFile',
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    ...visibleMarkers.map(
+                      (marker) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: TextFormField(
+                          key: ValueKey('$sex-$marker-${labs[marker] ?? ''}'),
+                          initialValue: labs[marker] ?? '',
+                          keyboardType:
+                              const TextInputType.numberWithOptions(decimal: true),
+                          decoration: InputDecoration(
+                            labelText: marker,
+                            hintText: 'Enter result',
+                          ),
+                          onChanged: (v) => onLabChanged(marker, v.trim()),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Values are context for wellness suggestions only. Abnormal or concerning results belong with a clinician.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class PlanPage extends StatelessWidget {
+            final String sleepGoal;
+            final double? currentWeight;
+            final double? goalWeight;
+            final Map<String, String> labs;
+            final Map<String, bool> connections;
+
+            const PlanPage({
+              super.key,
+              required this.sleepGoal,
+              required this.currentWeight,
+              required this.goalWeight,
+              required this.labs,
+              required this.connections,
+            });
+
+            double? labNumber(String name) {
+              final raw = labs[name];
+              if (raw == null || raw.isEmpty) return null;
+              return double.tryParse(raw.replaceAll(RegExp(r'[^0-9.\-]'), ''));
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final suggestions = <String>[
+                'Sleep: aim for $sleepGoal consistently and use connected sleep data to adjust recovery days.',
+                'Training: start with repeatable weekly sessions before adding complexity or volume.',
+                'Nutrition: prioritize protein, fiber-rich foods, vegetables, and a calorie intake that supports the selected weight goal.',
+              ];
+
+              final a1c = labNumber('A1C');
+              if (a1c != null) {
+                suggestions.add(
+                  'A1C entered: use it as context for food quality, activity consistency, and discussions with your clinician.',
+                );
+              }
+
+              final ldl = labNumber('LDL');
+              if (ldl != null) {
+                suggestions.add(
+                  'LDL entered: favor soluble fiber and unsaturated-fat food choices while keeping medical interpretation with your clinician.',
+                );
+              }
+
+              if (labs.containsKey('Total testosterone') &&
+                  (labs['Total testosterone']?.isNotEmpty ?? false)) {
+                suggestions.add(
+                  'Hormone value entered: Healthy Me will use it only as recovery context; hormone diagnosis and treatment stay with a clinician.',
+                );
+              }
+
+              if (connections.values.every((v) => !v)) {
+                suggestions.add(
+                  'Connect at least one data source so future plans can use real steps, sleep, weight, or workout trends.',
+                );
+              }
+
+              if (currentWeight != null && goalWeight != null) {
+                suggestions.insert(
+                  0,
+                  currentWeight! > goalWeight!
+                      ? 'Weight goal: focus on a sustainable downward trend rather than day-to-day scale changes.'
+                      : 'Weight goal: maintain the habits that got you to the target.',
+                );
+              }
+
+              return PageWrap(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SectionTitle(
+                      'Your Plan',
+                      subtitle:
+                          'Suggestions update from your profile, connected metrics, and the values you enter.',
+                    ),
+                    ...suggestions.map(
+                      (text) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: InfoCard(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.check_circle_outline),
+                              const SizedBox(width: 12),
+                              Expanded(child: Text(text)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Healthy Me is not a treatment plan and does not replace professional medical care.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+          DART
+
+      - name: Get dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: app
+        run: flutter analyze
+
+      - name: Build release APK
+        working-directory: app
+        run: flutter build apk --release
+
+      - name: Upload corrected APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthy-me-v0.6.1-corrected-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
